@@ -48,7 +48,7 @@ func PrepareAccounts(ac libgoal.Client, initCfg PpConfig) (accounts map[string]u
 func fundAccounts(accounts map[string]uint64, client libgoal.Client, cfg PpConfig) error {
 	srcFunds := accounts[cfg.SrcAccount]
 
-	// Fee of 0 will make cuase the function to use the suggested one by network
+	// Fee of 0 will make cause the function to use the suggested one by network
 	fee := uint64(0)
 
 	for addr, balance := range accounts {
