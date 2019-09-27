@@ -18,7 +18,10 @@ package pingpong
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"math"
 	"math/rand"
 	"os"
@@ -114,6 +117,25 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 	//			error = fundAccounts()
 	//  }
 
+
+	var fromList, toList, addrs []string
+	var programs [][]byte
+	var err error
+
+	if cfg.TLHC {
+		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+		toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+		programs, addrs, err = generateTLHC(fromList, toList)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error generating tlhc txn: %v\n", err)
+			return
+		}
+		err = refreshContractAccount(addrs, ac, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error refreshing: %v\n", err)
+		}
+	}
+
 	var runTime time.Duration
 	if cfg.RunTime > 0 {
 		runTime = cfg.RunTime
@@ -132,22 +154,53 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 
 		var totalSent, totalSucceeded uint64
 		for !time.Now().After(stopTime) {
-			fromList := listSufficientAccounts(accounts, (cfg.MaxAmt+cfg.MaxFee)*2, cfg.SrcAccount)
-			toList := listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+			var sent, succeeded uint64
+			var err error
+			if cfg.Airdrop {
+				//TODO: implementing airdrop
+				fmt.Fprintf(os.Stderr, "airdrop WIP.")
+				return
+			} else if cfg.TLHC{
 
-			sent, succeded, err := sendFromTo(fromList, toList, ac, cfg)
+				sent, succeeded, err = withdrawTLHC(addrs, fromList, programs, ac, cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error withdraw tlhc txn: %v\n", err)
+ 				}
+
+			} else if cfg.DirtyTeal{
+				//TODO: implement dirty teal
+				fmt.Fprintf(os.Stderr, "dierty teal WIP.")
+				return
+			} else {
+				fromList = listSufficientAccounts(accounts, (cfg.MaxAmt+cfg.MaxFee)*2, cfg.SrcAccount)
+				toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+				sent, succeeded, err = sendFromTo(fromList, toList, ac, cfg)
+			}
 			totalSent += sent
-			totalSucceeded += succeded
+			totalSucceeded += succeeded
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error sending transactions: %v\n", err)
 			}
 
 			if cfg.RefreshTime > 0 && time.Now().After(refreshTime) {
-				err = refreshAccounts(accounts, ac, cfg)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "error refreshing: %v\n", err)
+				if cfg.TLHC { //refresh contracts
+					fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+					toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+					programs, addrs, err = generateTLHC(fromList, toList)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error generating tlhc txn: %v\n", err)
+						return
+					}
+					err = refreshContractAccount(addrs, ac, cfg)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error refreshing: %v\n", err)
+					}
+				} else { //refresh non-contract accounts
+					err = refreshAccounts(accounts, ac, cfg)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error refreshing: %v\n", err)
+					}
 				}
-
 				refreshTime = refreshTime.Add(cfg.RefreshTime)
 			}
 		}
@@ -214,4 +267,145 @@ func sendFromTo(fromList, toList []string, client libgoal.Client, cfg PpConfig) 
 		}
 	}
 	return
+}
+
+// generate a list of tlhc contract
+func generateTLHC(fromList []string, toList []string) (programs [][]byte, addrs []string, err error) {
+	pOut := make([][]byte, 0, len(fromList))
+	pAddr := make([]string, 0, len(fromList))
+	for i, from := range fromList {
+		var program []byte
+		source := tlhc(from, toList[i])
+		program, err = logic.AssembleString(source)
+		if err != nil {
+			//TODO: revisit this error message
+			fmt.Fprintf(os.Stderr,"error when assemble TLHC program: %v\n", err)
+			return
+		}
+		ph := transactions.HashProgram(program)
+		pha := basics.Address(ph)
+		addressResolved := pha.String()
+		pAddr = append(pAddr, addressResolved)
+		pOut = append(pOut, program)
+	}
+	programs = pOut
+	addrs = pAddr
+	return
+}
+
+// sender of the TLHC withdraw
+func withdrawTLHC(contractList, toList []string, programs [][]byte, client libgoal.Client, cfg PpConfig) (sentCount, successCount uint64, err error) {
+	amt := cfg.TLHCWithdrawAmount
+	fee := cfg.MaxFee
+
+	for i, from := range contractList {
+		var programArgs [][]byte
+
+		if cfg.RandomizeFee {
+			fee = rand.Uint64()%(cfg.MaxFee-cfg.MinFee) + cfg.MinFee
+		}
+
+		if !cfg.Quiet {
+			fmt.Fprintf(os.Stdout, "TLHC withdraw %d : %v -> %s\n", amt, from, toList[i])
+		}
+
+		to := toList[i]
+
+		var noteField []byte
+		const pingpongTag = "pingpong-tlhc"
+		const tagLen = uint32(len(pingpongTag))
+		const randomBaseLen = uint32(8)
+		const maxNoteFieldLen = uint32(1024)
+		var noteLength = uint32(tagLen) + randomBaseLen
+		// if random note flag set, then append a random number of additional bytes
+		if cfg.RandomNote {
+			noteLength = noteLength + rand.Uint32()%(maxNoteFieldLen-noteLength)
+		}
+		noteField = make([]byte, noteLength, noteLength)
+		copy(noteField, pingpongTag)
+		crypto.RandBytes(noteField[tagLen:])
+
+		sentCount++
+
+		// construct the transaction
+		payment, constructErr := client.ConstructPayment(from, to, fee, amt, noteField, "", 0, 0)
+		arg1, _ := base64.StdEncoding.DecodeString("xPUB+DJir1wsH7g2iEY1QwYqHqYH1vUJtzZKW4RxXsY=")
+		programArgs = append(programArgs, arg1)
+		if constructErr != nil {
+			err = constructErr
+			if !cfg.Quiet {
+				fmt.Fprintf(os.Stderr, "error construction txn: %v\n", err)
+			}
+			return
+		}
+
+		stx := transactions.SignedTxn{
+				Txn: payment,
+				Lsig: transactions.LogicSig{
+					Logic: programs[i],
+					Args:  programArgs,
+				}}
+		fmt.Fprintf(os.Stdout, "program size: %v\n", len(programs[i]))
+		// send the transaction
+		_, sendErr := client.BroadcastTransaction(stx)
+
+		if sendErr != nil {
+			if !cfg.Quiet {
+			//programstr, _ := logic.Disassemble(programs[i])
+			fmt.Fprintf(os.Stderr, "error sending transaction: %v\n", sendErr)
+			//fmt.Fprintf(os.Stderr, "%s\n", programstr)
+			}
+			err = sendErr
+			//return
+		}
+
+		successCount++
+
+		if cfg.DelayBetweenTxn > 0 {
+			time.Sleep(cfg.DelayBetweenTxn)
+		}
+	}
+	return
+}
+
+// refresh TLHC contract accounts
+func refreshContractAccount(accounts []string, client libgoal.Client, cfg PpConfig) error {
+
+	// Fee of 0 will make cause the function to use the suggested one by network
+	fee := cfg.MaxFee
+	srcFunds, err := client.GetBalance(cfg.SrcAccount)
+	if err != nil {
+		return err
+	}
+	var contractMinAmount uint64
+	if cfg.RefreshTime == 0 {
+		contractMinAmount = 1000*3600*(cfg.TLHCWithdrawAmount+cfg.MaxFee)
+	} else {
+		contractMinAmount = 1000*uint64(cfg.RefreshTime.Seconds())*(cfg.TLHCWithdrawAmount+cfg.MaxFee)
+	}
+
+	const pingpongTag = "pingpong-tlhc-refund"
+	const tagLen = uint32(len(pingpongTag))
+	const randomBaseLen = uint32(8)
+	var noteLength = uint32(tagLen) + randomBaseLen
+	noteField := make([]byte, noteLength, noteLength)
+	copy(noteField, pingpongTag)
+	crypto.RandBytes(noteField[tagLen:])
+
+	for _, addr := range accounts {
+		balance, _ := client.GetBalance(addr)
+		if balance < contractMinAmount {
+			toSend := contractMinAmount - balance
+			if srcFunds <= toSend {
+				return fmt.Errorf("source account has insufficient funds %d - needs %d", srcFunds, toSend)
+			}
+			srcFunds -= toSend
+			_, err := client.SendPaymentFromUnencryptedWallet(cfg.SrcAccount, addr, fee, toSend, noteField)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

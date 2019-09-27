@@ -49,6 +49,8 @@ var saveConfig bool
 var useDefault bool
 var quietish bool
 var randomNote bool
+var teal string
+var tlhcWithdrawAmount uint64
 
 func init() {
 	rootCmd.AddCommand(runCmd)
@@ -72,7 +74,9 @@ func init() {
 	runCmd.Flags().BoolVar(&saveConfig, "save", false, "Save the effective configuration to disk")
 	runCmd.Flags().BoolVar(&useDefault, "reset", false, "Reset to the default configuration (not read from disk)")
 	runCmd.Flags().BoolVar(&quietish, "quiet", false, "quietish stdout logging")
-	runCmd.Flags().BoolVar(&randomNote, "randomnote", false, "generates a random byte array between 0-1024 bytes long")
+	runCmd.Flags().BoolVar(&randomNote, "randomnote", false, "generate a random byte array between 0-1024 bytes long")
+	runCmd.Flags().StringVar(&teal, "teal", "", "generate logic sig txns. currently support 'airdrop', 'tlhc', and 'dirty'")
+	runCmd.Flags().Uint64Var(&tlhcWithdrawAmount, "thlcWithdrawAmount", 1,"amount of each tlhc withdraw")
 }
 
 var runCmd = &cobra.Command{
@@ -175,6 +179,19 @@ var runCmd = &cobra.Command{
 		}
 		if randomNote {
 			cfg.RandomNote = true
+		}
+
+		if teal != "" {
+			switch teal {
+			case "airdrop":
+				cfg.Airdrop = true
+			case "tlhc":
+				cfg.TLHC = true
+			case "dirty":
+				cfg.DirtyTeal = true
+			default:
+				reportErrorf("Invalid value specified for --teal: %s", teal)
+			}
 		}
 
 		reportInfof("Preparing to initialize PingPong with config:\n")

@@ -30,38 +30,47 @@ const ConfigFilename = "ppconfig.json"
 
 // PpConfig defines configuration structure for
 type PpConfig struct {
-	SrcAccount      string
-	DelayBetweenTxn time.Duration
-	RandomizeFee    bool
-	RandomizeAmt    bool
-	RandomizeDst    bool
-	MaxFee          uint64
-	MinFee          uint64
-	MaxAmt          uint64
-	NumPartAccounts uint32
-	RunTime         time.Duration
-	RestTime        time.Duration
-	RefreshTime     time.Duration
-	MinAccountFunds uint64
-	Quiet           bool
-	RandomNote      bool
+	SrcAccount         string
+	DelayBetweenTxn    time.Duration
+	RandomizeFee       bool
+	RandomizeAmt       bool
+	RandomizeDst       bool
+	MaxFee             uint64
+	MinFee             uint64
+	MaxAmt             uint64
+	NumPartAccounts    uint32
+	RunTime            time.Duration
+	RestTime           time.Duration
+	RefreshTime        time.Duration
+	MinAccountFunds    uint64
+	Quiet              bool
+	RandomNote         bool
+	Airdrop			   bool
+	TLHC			   bool
+	DirtyTeal		   bool
+	TLHCWithdrawAmount uint64
 }
 
 // DefaultConfig object for Ping Pong
 var DefaultConfig = PpConfig{
-	SrcAccount:      "",
-	DelayBetweenTxn: 100,
-	RandomizeFee:    false,
-	RandomizeAmt:    false,
-	RandomizeDst:    false,
-	MaxFee:          10000,
-	MinFee:          1000,
-	MaxAmt:          1000,
-	NumPartAccounts: 10,
-	RunTime:         10 * time.Second,
-	RestTime:        1 * time.Hour, // Long default rest to avoid accidental DoS
-	RefreshTime:     10 * time.Second,
-	MinAccountFunds: 100000,
+	SrcAccount:         "",
+	DelayBetweenTxn:    100,
+	RandomizeFee:       false,
+	RandomizeAmt:       false,
+	RandomizeDst:       false,
+	MaxFee:             10000,
+	MinFee:             1000,
+	MaxAmt:             1000,
+	NumPartAccounts:    10,
+	RunTime:            10 * time.Second,
+	RestTime:           1 * time.Hour, // Long default rest to avoid accidental DoS
+	RefreshTime:        10 * time.Second,
+	MinAccountFunds:    100000,
+	RandomNote:         false,
+	Airdrop: 		    false,
+	TLHC:			    false,
+	DirtyTeal:	 	    false,
+	TLHCWithdrawAmount: 1,
 }
 
 // LoadConfigFromFile reads and loads Ping Pong configuration
