@@ -259,6 +259,23 @@ btoi
 	require.NoError(t, err)
 }
 
+func TestItob(t *testing.T) {
+	t.Parallel()
+	program, err := AssembleString(`byte 0x1234567812345678
+int 0x1234567812345678
+itob
+==`)
+	require.NoError(t, err)
+	sb := strings.Builder{}
+	pass, err := Eval(program, EvalParams{Trace: &sb})
+	if !pass {
+		t.Log(hex.EncodeToString(program))
+		t.Log(sb.String())
+	}
+	require.NoError(t, err)
+	require.True(t, pass)
+}
+
 func TestBtoi(t *testing.T) {
 	t.Parallel()
 	program, err := AssembleString(`int 0x1234567812345678
@@ -690,7 +707,7 @@ func TestGtxnBadIndex(t *testing.T) {
 	txn.Lsig.Args = nil
 	txgroup := make([]transactions.SignedTxnWithAD, 1)
 	txgroup[0].SignedTxn = txn
-	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGoup: txgroup})
+	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGroup: txgroup})
 	if pass {
 		t.Log(hex.EncodeToString(program))
 		t.Log(sb.String())
@@ -711,7 +728,7 @@ func TestGtxnBadField(t *testing.T) {
 	txn.Lsig.Args = nil
 	txgroup := make([]transactions.SignedTxnWithAD, 1)
 	txgroup[0].SignedTxn = txn
-	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGoup: txgroup})
+	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGroup: txgroup})
 	if pass {
 		t.Log(hex.EncodeToString(program))
 		t.Log(sb.String())
@@ -776,9 +793,7 @@ int 9
 	require.True(t, pass)
 }
 
-func TestGlobal(t *testing.T) {
-	t.Parallel()
-	program, err := AssembleString(`global MinTxnFee
+const globalTestProgram = `global MinTxnFee
 int 123
 ==
 global MinBalance
@@ -796,13 +811,32 @@ txn CloseRemainderTo
 global TimeStamp
 int 2069
 ==
-&&`)
+&&
+global Round
+int 999999
+==
+&&
+global GroupSize
+int 1
+==
+&&`
+
+func TestGlobal(t *testing.T) {
+	t.Parallel()
+	for _, globalField := range GlobalFieldNames {
+		if !strings.Contains(globalTestProgram, globalField) {
+			t.Errorf("TestGlobal missing field %v", globalField)
+		}
+	}
+	program, err := AssembleString(globalTestProgram)
 	require.NoError(t, err)
 	cost, err := Check(program, EvalParams{})
 	require.NoError(t, err)
 	require.True(t, cost < 1000)
 	var txn transactions.SignedTxn
 	txn.Lsig.Logic = program
+	txgroup := make([]transactions.SignedTxnWithAD, 1)
+	txgroup[0].SignedTxn = txn
 	sb := strings.Builder{}
 	block := bookkeeping.Block{}
 	block.BlockHeader.Round = 999999
@@ -813,7 +847,13 @@ int 2069
 		MaxTxnLife:      999,
 		LogicSigVersion: 1,
 	}
-	ep := EvalParams{Trace: &sb, Txn: &txn, Block: &block, Proto: &proto}
+	ep := EvalParams{
+		Trace:    &sb,
+		Txn:      &txn,
+		Block:    &block,
+		Proto:    &proto,
+		TxnGroup: txgroup,
+	}
 	pass, err := Eval(program, ep)
 	if !pass {
 		t.Log(hex.EncodeToString(program))
@@ -905,10 +945,27 @@ arg 0
 txn GroupIndex
 int 3
 ==
+&&
+txn TxID
+arg 7
+==
+&&
+txn SenderBalance
+int 4160
+==
+&&
+txn Lease
+arg 8
+==
 &&`
 
 func TestTxn(t *testing.T) {
 	t.Parallel()
+	for _, txnField := range TxnFieldNames {
+		if !strings.Contains(testTxnProgramText, txnField) {
+			t.Errorf("TestTxn missing field %v", txnField)
+		}
+	}
 	program, err := AssembleString(testTxnProgramText)
 	require.NoError(t, err)
 	cost, err := Check(program, EvalParams{})
@@ -925,6 +982,7 @@ func TestTxn(t *testing.T) {
 	txn.Txn.XferAsset.Index = 1
 	// This is not a valid transaction to have all these fields set this way
 	txn.Txn.Note = []byte("fnord")
+	copy(txn.Txn.Lease[:], []byte("woofwoof"))
 	txn.Txn.Fee.Raw = 1337
 	txn.Txn.FirstValid = 42
 	txn.Txn.LastValid = 1066
@@ -938,6 +996,7 @@ func TestTxn(t *testing.T) {
 	txn.Txn.AssetReceiver = txn.Txn.CloseRemainderTo
 	txn.Txn.AssetCloseTo = txn.Txn.Sender
 	txn.Lsig.Logic = program
+	txid := txn.Txn.ID()
 	txn.Lsig.Args = [][]byte{
 		txn.Txn.Sender[:],
 		txn.Txn.Receiver[:],
@@ -946,9 +1005,13 @@ func TestTxn(t *testing.T) {
 		txn.Txn.SelectionPK[:],
 		txn.Txn.Note,
 		append([]byte(creator), 0, 0, 0, 0, 0, 0, 0, 1),
+		txid[:],
+		txn.Txn.Lease[:],
 	}
+	recs := make([]basics.BalanceRecord, 4)
+	recs[3].MicroAlgos.Raw = 4160
 	sb := strings.Builder{}
-	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, GroupIndex: 3})
+	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, GroupSenders: recs, GroupIndex: 3})
 	if !pass {
 		t.Log(hex.EncodeToString(program))
 		t.Log(sb.String())
@@ -1051,7 +1114,7 @@ int 2
 		txn.Txn.Note,
 	}
 	sb = strings.Builder{}
-	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGoup: txgroup})
+	pass, err := Eval(program, EvalParams{Trace: &sb, Txn: &txn, TxnGroup: txgroup})
 	if !pass || err != nil {
 		t.Log(hex.EncodeToString(program))
 		t.Log(sb.String())
@@ -1443,6 +1506,33 @@ int 1`)
 	require.True(t, strings.Contains(err.Error(), "too large"))
 	pass, err := Eval(program, EvalParams{})
 	require.Error(t, err)
+	require.False(t, pass)
+}
+
+func TestFetchSenderBalance(t *testing.T) {
+	t.Parallel()
+	bal := uint64(30000)
+	program, err := AssembleString(fmt.Sprintf(`int %d
+txn SenderBalance
+==`, bal))
+	require.NoError(t, err)
+	//t.Log(hex.EncodeToString(program))
+	canonicalProgramBytes, err := hex.DecodeString("012001b0ea0122311612")
+	require.NoError(t, err)
+	require.Equal(t, program, canonicalProgramBytes)
+
+	_, err = Check(program, EvalParams{})
+	require.NoError(t, err)
+
+	params := EvalParams{GroupSenders: make([]basics.BalanceRecord, 1), Txn: new(transactions.SignedTxn)}
+	params.GroupSenders[0].MicroAlgos.Raw = bal
+	pass, err := Eval(program, params)
+	require.NoError(t, err)
+	require.True(t, pass)
+
+	params.GroupSenders[0].MicroAlgos.Raw = bal + 1
+	pass, err = Eval(program, params)
+	require.NoError(t, err)
 	require.False(t, pass)
 }
 

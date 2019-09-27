@@ -86,10 +86,13 @@ type EvalParams struct {
 
 	Trace io.Writer
 
-	TxnGoup []transactions.SignedTxnWithAD
+	TxnGroup []transactions.SignedTxnWithAD
 
 	// GroupIndex should point to Txn within TxnGroup
 	GroupIndex int
+
+	// for each sender in TxnGroup, its BalanceRecord
+	GroupSenders []basics.BalanceRecord
 
 	// pseudo random number generator, or seed parts
 	Source   Source64
@@ -277,6 +280,7 @@ var OpSpecs = []OpSpec{
 	{0x13, "!=", opNeq, twoAny, oneInt},
 	{0x14, "!", opNot, oneInt, oneInt},
 	{0x15, "len", opLen, oneBytes, oneInt},
+	{0x16, "itob", opItob, oneInt, oneBytes},
 	{0x17, "btoi", opBtoi, oneBytes, oneInt},
 	{0x18, "%", opModulo, twoInts, oneInt},
 	{0x19, "|", opBitOr, twoInts, oneInt},
@@ -476,6 +480,10 @@ func (cx *evalContext) checkStep() (cost int) {
 	}
 	if opsByOpcode[opcode].Returns != nil {
 		cx.checkStack = append(cx.checkStack, opsByOpcode[opcode].Returns...)
+	}
+	if len(cx.checkStack) > MaxStackDepth {
+		cx.err = errors.New("stack overflow")
+		return
 	}
 	if cx.Trace != nil {
 		if len(cx.checkStack) == 0 {
@@ -757,6 +765,13 @@ func opLen(cx *evalContext) {
 	cx.stack[last].Bytes = nil
 }
 
+func opItob(cx *evalContext) {
+	last := len(cx.stack) - 1
+	ibytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(ibytes, cx.stack[last].Uint)
+	cx.stack[last].Bytes = ibytes
+}
+
 func opBtoi(cx *evalContext) {
 	last := len(cx.stack) - 1
 	ibytes := cx.stack[last].Bytes
@@ -970,7 +985,14 @@ func (cx *evalContext) txnFieldToStack(txn *transactions.Transaction, field uint
 	case 19:
 		sv.Bytes = txn.AssetCloseTo[:]
 	case 20:
-		panic("GroupIndex should be handled outside txnFieldToStack")
+		sv.Uint = uint64(cx.GroupIndex)
+	case 21:
+		txid := txn.ID()
+		sv.Bytes = txid[:]
+	case 22:
+		sv.Uint = cx.GroupSenders[cx.GroupIndex].MicroAlgos.Raw
+	case 23:
+		sv.Bytes = txn.Lease[:]
 	default:
 		err = fmt.Errorf("invalid txn field %d", field)
 	}
@@ -981,14 +1003,10 @@ func opTxn(cx *evalContext) {
 	field := uint64(cx.program[cx.pc+1])
 	var sv stackValue
 	var err error
-	if field == 20 {
-		sv.Uint = uint64(cx.GroupIndex)
-	} else {
-		sv, err = cx.txnFieldToStack(&cx.Txn.Txn, field)
-		if err != nil {
-			cx.err = err
-			return
-		}
+	sv, err = cx.txnFieldToStack(&cx.Txn.Txn, field)
+	if err != nil {
+		cx.err = err
+		return
 	}
 	cx.stack = append(cx.stack, sv)
 	cx.nextpc = cx.pc + 2
@@ -996,17 +1014,19 @@ func opTxn(cx *evalContext) {
 
 func opGtxn(cx *evalContext) {
 	gtxid := int(uint(cx.program[cx.pc+1]))
-	if gtxid >= len(cx.TxnGoup) {
-		cx.err = fmt.Errorf("gtxn lookup TxnGroup[%d] but it only has %d", gtxid, len(cx.TxnGoup))
+	if gtxid >= len(cx.TxnGroup) {
+		cx.err = fmt.Errorf("gtxn lookup TxnGroup[%d] but it only has %d", gtxid, len(cx.TxnGroup))
 		return
 	}
-	tx := &cx.TxnGoup[gtxid].Txn
+	tx := &cx.TxnGroup[gtxid].Txn
 	field := uint64(cx.program[cx.pc+2])
 	var sv stackValue
 	var err error
 	if field == 20 {
 		// GroupIndex; asking this when we just specified it is _dumb_, but oh well
 		sv.Uint = uint64(gtxid)
+	} else if field == 22 {
+		sv.Uint = cx.GroupSenders[gtxid].MicroAlgos.Raw
 	} else {
 		sv, err = cx.txnFieldToStack(tx, field)
 		if err != nil {
@@ -1041,7 +1061,7 @@ func opGlobal(cx *evalContext) {
 	case 5:
 		sv.Bytes = zeroAddress[:]
 	case 6:
-		sv.Uint = uint64(len(cx.TxnGoup))
+		sv.Uint = uint64(len(cx.TxnGroup))
 	default:
 		cx.err = fmt.Errorf("invalid global[%d]", gindex)
 		return

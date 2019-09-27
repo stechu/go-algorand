@@ -51,6 +51,7 @@ var opDocList = []stringString{
 	{"!=", "A is not equal to B => {0 or 1}"},
 	{"!", "X == 0 yields 1; else 0"},
 	{"len", "yields length of byte value"},
+	{"itob", "converts uint64 to big endian bytes"},
 	{"btoi", "converts bytes as big endian to uint64"},
 	{"%", "A modulo B. Panic if B == 0."},
 	{"|", "A bitwise-or B"},
@@ -125,9 +126,10 @@ var opDocExtraList = []stringString{
 	{"intcblock", "`intcblock` loads following program bytes into an array of integer constants in the evaluator. These integer constants can be referred to by `intc` and `intc_*` which will push the value onto the stack."},
 	{"bytecblock", "`bytecblock` loads the following program bytes into an array of byte string constants in the evaluator. These constants can be referred to by `bytec` and `bytec_*` which will push the value onto the stack."},
 	{"*", "It is worth noting that there are 10,000,000,000,000,000 micro-Algos in the total supply, or a bit less than 2^54. When doing rational math, e.g. (A * (N/D)) as ((A * N) / D) one should limit the numerator to less than 2^10 to be completely sure there won't be overflow."},
-	{"txn", "Most fields are a simple copy of a uint64 or byte string value. `XferAsset` is the concatenation of the AssetID Creator Address (32 bytes) and the big-endian bytes of the uint64 AssetID Index for a total of 40 bytes."},
+	{"txn", "Most fields are a simple copy of a uint64 or byte string value. `XferAsset` is the concatenation of the AssetID Creator Address (32 bytes) and the big-endian bytes of the uint64 AssetID Index for a total of 40 bytes. `SenderBalance` is the uin64 balance of the sender, with rewards factored in, at the time of execution."},
 	{"gtxn", "for notes on transaction fields available, see `txn`"},
 	{"rand", "Random number generator based on the ChaCha20 algorithm. Seeded with the previous block's `Seed` value and the current transaction ID."},
+	{"btoi", "`btoi` panics if the input is longer than 8 bytes"},
 }
 
 var opDocExtras map[string]string
@@ -149,7 +151,7 @@ type OpGroup struct {
 
 // OpGroupList is groupings of ops for documentation purposes.
 var OpGroupList = []OpGroup{
-	{"Arithmetic", []string{"sha256", "keccak256", "sha512_256", "ed25519verify", "rand", "+", "-", "/", "*", "<", ">", "<=", ">=", "&&", "||", "==", "!=", "!", "len", "btoi", "%", "|", "&", "^", "~", "mulw"}},
+	{"Arithmetic", []string{"sha256", "keccak256", "sha512_256", "ed25519verify", "rand", "+", "-", "/", "*", "<", ">", "<=", ">=", "&&", "||", "==", "!=", "!", "len", "itob", "btoi", "%", "|", "&", "^", "~", "mulw"}},
 	{"Loading Values", []string{"intcblock", "intc", "intc_0", "intc_1", "intc_2", "intc_3", "bytecblock", "bytec", "bytec_0", "bytec_1", "bytec_2", "bytec_3", "arg", "arg_0", "arg_1", "arg_2", "arg_3", "txn", "gtxn", "global", "load", "store"}},
 	{"Flow Control", []string{"err", "bnz", "pop", "dup"}},
 }

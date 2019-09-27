@@ -32,6 +32,7 @@ import (
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/data/transactions/verify"
 	"github.com/algorand/go-algorand/libgoal"
 	"github.com/algorand/go-algorand/protocol"
 
@@ -62,6 +63,7 @@ var (
 	logicSigFile    string
 	round           uint64
 	timeStamp       int64
+	seedBase64      string
 )
 
 func init() {
@@ -130,6 +132,7 @@ func init() {
 	dryrunCmd.Flags().StringVarP(&txFilename, "txfile", "t", "", "transaction or transaction-group to test")
 	dryrunCmd.Flags().Uint64VarP(&round, "round", "r", 1, "round number to simulate")
 	dryrunCmd.Flags().Int64VarP(&timeStamp, "time-stamp", "S", 0, "unix time stamp simulate (default now)")
+	dryrunCmd.Flags().StringVarP(&seedBase64, "seed", "R", "2JNZvkCE2KFv3wVbEIEsPPNR64ttpaWuD5NEIXqXc3g=", "base64 bytes to seed random number generator with")
 }
 
 var clerkCmd = &cobra.Command{
@@ -571,7 +574,7 @@ var signCmd = &cobra.Command{
 			var signedTxn transactions.SignedTxn
 			if lsig.Logic != nil {
 				proto := config.Consensus[protocol.ConsensusCurrentVersion]
-				err = lsig.Verify(&proto, &unsignedTxn.Txn)
+				err = verify.LogicSig(&lsig, &proto, &unsignedTxn)
 				if err != nil {
 					reportErrorf("%s: txn[%d] error %s", txFilename, count, err)
 				}
@@ -796,6 +799,10 @@ var dryrunCmd = &cobra.Command{
 	Short: "test a program offline",
 	Long:  "test a program offline under various conditions and verbosity",
 	Run: func(cmd *cobra.Command, args []string) {
+		seed, err := base64.StdEncoding.DecodeString(seedBase64)
+		if err != nil {
+			reportErrorf("invalid seed: %s", err)
+		}
 		data, err := readFile(txFilename)
 		if err != nil {
 			reportErrorf(fileReadError, txFilename, err)
@@ -828,12 +835,26 @@ var dryrunCmd = &cobra.Command{
 			if txn.Lsig.Blank() {
 				continue
 			}
+			ep := logic.EvalParams{Txn: &txn.SignedTxn, Proto: &proto}
+			cost, err := logic.Check(txn.Lsig.Logic, ep)
+			if err != nil {
+				reportErrorf("program failed Check: %s")
+			}
+			txid := txn.ID()
 			sb := strings.Builder{}
-			ep := logic.EvalParams{Trace: &sb, Txn: &txn.SignedTxn, Block: &block, Proto: &proto}
-			// TODO: also logic.Check() to get cost estimate and make sure it passes that
+			ep = logic.EvalParams{
+				Txn:        &txn.SignedTxn,
+				Block:      &block,
+				Proto:      &proto,
+				Trace:      &sb,
+				TxnGroup:   txgroup,
+				GroupIndex: i,
+				Seed:       seed,
+				MoreSeed:   txid[:],
+			}
 			pass, err := logic.Eval(txn.Lsig.Logic, ep)
 			// TODO: optionally include `inspect` output here?
-			fmt.Fprintf(os.Stdout, "tx[%d] trace:\n%s\n", i, sb.String())
+			fmt.Fprintf(os.Stdout, "tx[%d] cost=%d trace:\n%s\n", i, cost, sb.String())
 			if pass {
 				fmt.Fprintf(os.Stdout, " - pass -\n")
 			} else {

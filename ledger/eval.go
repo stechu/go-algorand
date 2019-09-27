@@ -28,6 +28,7 @@ import (
 	"github.com/algorand/go-algorand/data/committee"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/data/transactions/verify"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/util/execpool"
@@ -56,14 +57,17 @@ type roundCowBase struct {
 
 	// TxnCounter from previous block header.
 	txnCount uint64
+
+	// The current protocol consensus params.
+	proto config.ConsensusParams
 }
 
 func (x *roundCowBase) lookup(addr basics.Address) (basics.AccountData, error) {
 	return x.l.LookupWithoutRewards(x.rnd, addr)
 }
 
-func (x *roundCowBase) isDup(firstValid basics.Round, txid transactions.Txid) (bool, error) {
-	return x.l.isDup(firstValid, x.rnd, txid)
+func (x *roundCowBase) isDup(firstValid basics.Round, txid transactions.Txid, txl txlease) (bool, error) {
+	return x.l.isDup(x.proto, x.rnd+1, firstValid, x.rnd, txid, txl)
 }
 
 func (x *roundCowBase) txnCounter() uint64 {
@@ -168,7 +172,7 @@ type ledgerForEvaluator interface {
 	BlockHdr(basics.Round) (bookkeeping.BlockHeader, error)
 	Lookup(basics.Round, basics.Address) (basics.AccountData, error)
 	Totals(basics.Round) (AccountTotals, error)
-	isDup(basics.Round, basics.Round, transactions.Txid) (bool, error)
+	isDup(config.ConsensusParams, basics.Round, basics.Round, basics.Round, transactions.Txid, txlease) (bool, error)
 	LookupWithoutRewards(basics.Round, basics.Address) (basics.AccountData, error)
 }
 
@@ -194,7 +198,8 @@ func startEvaluator(l ledgerForEvaluator, hdr bookkeeping.BlockHeader, aux *eval
 		// the block at this round below, so underflow will be caught.
 		// If we are not validating, we must have previously checked
 		// an agreement.Certificate attesting that hdr is valid.
-		rnd: hdr.Round - 1,
+		rnd:   hdr.Round - 1,
+		proto: proto,
 	}
 
 	eval := &BlockEvaluator{
@@ -454,7 +459,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, ad transacti
 
 		// Transaction already in the ledger?
 		txid := txn.ID()
-		dup, err := cow.isDup(txn.Txn.First(), txid)
+		dup, err := cow.isDup(txn.Txn.First(), txid, txlease{sender: txn.Txn.Sender, lease: txn.Txn.Lease})
 		if err != nil {
 			return err
 		}
@@ -470,7 +475,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, ad transacti
 
 		// Properly signed?
 		if eval.txcache == nil || !eval.txcache.Verified(txn) {
-			err = TxnPoolVerify(&txn, spec, eval.proto, eval.verificationPool)
+			err = verify.TxnPool(&txn, spec, eval.proto, eval.verificationPool)
 			if err != nil {
 				return fmt.Errorf("transaction %v: failed to verify: %v", txn.ID(), err)
 			}
@@ -482,14 +487,23 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, ad transacti
 		}
 
 		if !txn.Lsig.Blank() {
+			recs := make([]basics.BalanceRecord, len(txgroup))
+			for i := range recs {
+				var err error
+				recs[i], err = cow.Get(txgroup[i].Txn.Sender, true)
+				if err != nil {
+					return fmt.Errorf("transaction %v: cannot get sender record: %v", txn.ID(), err)
+				}
+			}
 			ep := logic.EvalParams{
-				Txn:        &txn,
-				Block:      &eval.block,
-				Proto:      &eval.proto,
-				TxnGoup:    txgroup,
-				GroupIndex: groupIndex,
-				Seed:       eval.prevHeader.Seed[:],
-				MoreSeed:   txid[:],
+				Txn:          &txn,
+				Block:        &eval.block,
+				Proto:        &eval.proto,
+				TxnGroup:     txgroup,
+				GroupIndex:   groupIndex,
+				GroupSenders: recs,
+				Seed:         eval.prevHeader.Seed[:],
+				MoreSeed:     txid[:],
 			}
 			pass, err := logic.Eval(txn.Lsig.Logic, ep)
 			if !pass {
@@ -555,8 +569,8 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, ad transacti
 		}
 	}
 
-	// Remember this TXID (to detect duplicates)
-	cow.addTx(txn.ID())
+	// Remember this txn
+	cow.addTx(txn.Txn)
 
 	return nil
 }
