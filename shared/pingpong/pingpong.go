@@ -18,15 +18,16 @@ package pingpong
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/base64"
 	"fmt"
-	"github.com/algorand/go-algorand/data/transactions"
-	"github.com/algorand/go-algorand/data/transactions/logic"
 	"math"
 	"math/rand"
 	"os"
 	"time"
 
+	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/libgoal"
@@ -122,34 +123,18 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 	var programs [][]byte
 	var err error
 
-	if cfg.TLHC {
+	if cfg.TLHC || cfg.DirtyTeal || cfg.Airdrop {
 		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-		toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-		programs, addrs, err = generateTLHC(fromList, toList)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error generating tlhc contract: %v\n", err)
-			return
+		if cfg.TLHC {
+			toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+			programs, addrs, err = generateTLHC(fromList, toList)
+		} else if cfg.DirtyTeal {
+			programs, addrs, err = generateDirtyTeal(len(fromList))
+		} else if cfg.Airdrop {
+			programs, addrs, err = generateAirdrop(len(fromList))
 		}
-		err = refreshContractAccount(addrs, ac, cfg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
-		}
-	} else if cfg.DirtyTeal {
-		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-		programs, addrs, err = generateDirtyTeal(len(fromList))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error generating dirty teal contract: %v\n", err)
-			return
-		}
-		err = refreshContractAccount(addrs, ac, cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
-		}
-	} else if cfg.Airdrop {
-		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-		programs, addrs, err = generateAirdrop(len(fromList))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error generating dirty teal contract: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error generating contract: %v\n", err)
 			return
 		}
 		err = refreshContractAccount(addrs, ac, cfg)
@@ -157,7 +142,6 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
 		}
 	}
-
 
 	var runTime time.Duration
 	if cfg.RunTime > 0 {
@@ -199,10 +183,17 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 			if cfg.RefreshTime > 0 && time.Now().After(refreshTime) {
 				if cfg.TLHC || cfg.DirtyTeal || cfg.Airdrop { //refresh contracts
 					fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-					toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
-					programs, addrs, err = generateTLHC(fromList, toList)
+					if cfg.TLHC {
+						toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+						programs, addrs, err = generateTLHC(fromList, toList)
+					} else if cfg.DirtyTeal {
+						programs, addrs, err = generateDirtyTeal(len(fromList))
+					} else if cfg.Airdrop {
+						programs, addrs, err = generateAirdrop(len(fromList))
+					}
+
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "error generating tlhc txn: %v\n", err)
+						fmt.Fprintf(os.Stderr, "error generating txn: %v\n", err)
 						return
 					}
 					err = refreshContractAccount(addrs, ac, cfg)
@@ -308,7 +299,6 @@ func generateTLHC(fromList []string, toList []string) (programs [][]byte, addrs 
 func contractWithdraw(contractList, toList []string, programs [][]byte, client libgoal.Client, cfg PpConfig) (sentCount, successCount uint64, err error) {
 	amt := cfg.ContractWithdrawAmount
 	fee := cfg.MaxFee
-	fmt.Fprintf(os.Stderr, "cl: %d, tl:%d\n", len(contractList), len(toList))
 	for i, from := range contractList {
 
 		if cfg.RandomizeFee {
@@ -439,8 +429,8 @@ func generateAirdrop(number int) (programs [][]byte, addrs []string, err error){
 	for i := 0; i < number; i++ {
 		rBytes := make([]byte, 5, 5)
 		crypto.RandBytes(rBytes)
-		bStr := base64.StdEncoding.EncodeToString(rBytes)
-		prefix := fmt.Sprintf("byte base64 %s\npop\n", bStr)
+		bStr := base32.StdEncoding.EncodeToString(rBytes)
+		prefix := fmt.Sprintf("byte base32 %s\npop\n", bStr)
 		p, a, genErr := generateContract(prefix+airdropTeal)
 		if genErr != nil {
 			fmt.Fprintf(os.Stderr,"error when generating dirty teal contract: %v\n", genErr)
@@ -462,8 +452,8 @@ func generateDirtyTeal(number int) (programs [][]byte, addrs []string, err error
 	for i := 0; i < number; i++ {
 		rBytes := make([]byte, 5, 5)
 		crypto.RandBytes(rBytes)
-		bStr := base64.StdEncoding.EncodeToString(rBytes)
-		prefix := fmt.Sprintf("byte base64 %s\npop\n", bStr)
+		bStr := base32.StdEncoding.EncodeToString(rBytes)
+		prefix := fmt.Sprintf("byte base32 %s\npop\n", bStr)
 		p, a, genErr := generateContract(prefix+dirtyTeal)
 		if genErr != nil {
 			fmt.Fprintf(os.Stderr,"error when generating dirty teal contract: %v\n", genErr)
@@ -483,7 +473,8 @@ func generateContract(pStr string) (program []byte, address string, err error) {
 	var tp []byte
 	tp, err = logic.AssembleString(pStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr,"error when assemble TLHC program: %v\n", err)
+		fmt.Fprintf(os.Stderr,"error when assemble airdrop program: %v\n", err)
+		fmt.Fprintf(os.Stderr," %s\n", pStr)
 		return
 	}
 	program = tp
