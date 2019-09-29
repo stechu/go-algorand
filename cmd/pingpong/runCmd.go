@@ -50,7 +50,7 @@ var useDefault bool
 var quietish bool
 var randomNote bool
 var teal string
-var tlhcWithdrawAmount uint64
+var contractWithdrawAmount uint64
 
 func init() {
 	rootCmd.AddCommand(runCmd)
@@ -76,7 +76,7 @@ func init() {
 	runCmd.Flags().BoolVar(&quietish, "quiet", false, "quietish stdout logging")
 	runCmd.Flags().BoolVar(&randomNote, "randomnote", false, "generate a random byte array between 0-1024 bytes long")
 	runCmd.Flags().StringVar(&teal, "teal", "", "generate logic sig txns. currently support 'airdrop', 'tlhc', and 'dirty'")
-	runCmd.Flags().Uint64Var(&tlhcWithdrawAmount, "thlcWithdrawAmount", 1,"amount of each tlhc withdraw")
+	runCmd.Flags().Uint64Var(&contractWithdrawAmount, "contractWithdrawAmount", 1,"amount of each contract withdraw")
 }
 
 var runCmd = &cobra.Command{
@@ -193,6 +193,8 @@ var runCmd = &cobra.Command{
 				reportErrorf("Invalid value specified for --teal: %s", teal)
 			}
 		}
+
+		cfg.ContractWithdrawAmount = contractWithdrawAmount
 
 		reportInfof("Preparing to initialize PingPong with config:\n")
 		cfg.Dump(os.Stdout)

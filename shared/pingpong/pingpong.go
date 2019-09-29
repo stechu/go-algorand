@@ -127,14 +127,37 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 		toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
 		programs, addrs, err = generateTLHC(fromList, toList)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error generating tlhc txn: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error generating tlhc contract: %v\n", err)
 			return
 		}
 		err = refreshContractAccount(addrs, ac, cfg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error refreshing: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
+		}
+	} else if cfg.DirtyTeal {
+		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+		programs, addrs, err = generateDirtyTeal(len(fromList))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error generating dirty teal contract: %v\n", err)
+			return
+		}
+		err = refreshContractAccount(addrs, ac, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
+		}
+	} else if cfg.Airdrop {
+		fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
+		programs, addrs, err = generateAirdrop(len(fromList))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error generating dirty teal contract: %v\n", err)
+			return
+		}
+		err = refreshContractAccount(addrs, ac, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error refreshing tlhc accounts: %v\n", err)
 		}
 	}
+
 
 	var runTime time.Duration
 	if cfg.RunTime > 0 {
@@ -156,21 +179,12 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 		for !time.Now().After(stopTime) {
 			var sent, succeeded uint64
 			var err error
-			if cfg.Airdrop {
-				//TODO: implementing airdrop
-				fmt.Fprintf(os.Stderr, "airdrop WIP.")
-				return
-			} else if cfg.TLHC{
-
-				sent, succeeded, err = withdrawTLHC(addrs, fromList, programs, ac, cfg)
+			if cfg.TLHC || cfg.DirtyTeal || cfg.Airdrop {
+				sent, succeeded, err = contractWithdraw(addrs, fromList, programs, ac, cfg)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error withdraw tlhc txn: %v\n", err)
  				}
 
-			} else if cfg.DirtyTeal{
-				//TODO: implement dirty teal
-				fmt.Fprintf(os.Stderr, "dierty teal WIP.")
-				return
 			} else {
 				fromList = listSufficientAccounts(accounts, (cfg.MaxAmt+cfg.MaxFee)*2, cfg.SrcAccount)
 				toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
@@ -183,7 +197,7 @@ func RunPingPong(ctx context.Context, ac libgoal.Client, accounts map[string]uin
 			}
 
 			if cfg.RefreshTime > 0 && time.Now().After(refreshTime) {
-				if cfg.TLHC { //refresh contracts
+				if cfg.TLHC || cfg.DirtyTeal || cfg.Airdrop { //refresh contracts
 					fromList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
 					toList = listSufficientAccounts(accounts, 0, cfg.SrcAccount)
 					programs, addrs, err = generateTLHC(fromList, toList)
@@ -275,17 +289,14 @@ func generateTLHC(fromList []string, toList []string) (programs [][]byte, addrs 
 	pAddr := make([]string, 0, len(fromList))
 	for i, from := range fromList {
 		var program []byte
+		var addr string
 		source := tlhc(from, toList[i])
-		program, err = logic.AssembleString(source)
+		program, addr, err = generateContract(source)
 		if err != nil {
-			//TODO: revisit this error message
-			fmt.Fprintf(os.Stderr,"error when assemble TLHC program: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error generating tlhc program: %v\n", err)
 			return
 		}
-		ph := transactions.HashProgram(program)
-		pha := basics.Address(ph)
-		addressResolved := pha.String()
-		pAddr = append(pAddr, addressResolved)
+		pAddr = append(pAddr, addr)
 		pOut = append(pOut, program)
 	}
 	programs = pOut
@@ -293,26 +304,25 @@ func generateTLHC(fromList []string, toList []string) (programs [][]byte, addrs 
 	return
 }
 
-// sender of the TLHC withdraw
-func withdrawTLHC(contractList, toList []string, programs [][]byte, client libgoal.Client, cfg PpConfig) (sentCount, successCount uint64, err error) {
-	amt := cfg.TLHCWithdrawAmount
+// send contract withdraw transactions
+func contractWithdraw(contractList, toList []string, programs [][]byte, client libgoal.Client, cfg PpConfig) (sentCount, successCount uint64, err error) {
+	amt := cfg.ContractWithdrawAmount
 	fee := cfg.MaxFee
-
+	fmt.Fprintf(os.Stderr, "cl: %d, tl:%d\n", len(contractList), len(toList))
 	for i, from := range contractList {
-		var programArgs [][]byte
 
 		if cfg.RandomizeFee {
 			fee = rand.Uint64()%(cfg.MaxFee-cfg.MinFee) + cfg.MinFee
 		}
 
 		if !cfg.Quiet {
-			fmt.Fprintf(os.Stdout, "TLHC withdraw %d : %v -> %s\n", amt, from, toList[i])
+			fmt.Fprintf(os.Stdout, "contract withdraw %d : %v -> %s\n", amt, from, toList[i])
 		}
 
 		to := toList[i]
 
 		var noteField []byte
-		const pingpongTag = "pingpong-tlhc"
+		const pingpongTag = "pingpong-teal"
 		const tagLen = uint32(len(pingpongTag))
 		const randomBaseLen = uint32(8)
 		const maxNoteFieldLen = uint32(1024)
@@ -330,7 +340,7 @@ func withdrawTLHC(contractList, toList []string, programs [][]byte, client libgo
 		// construct the transaction
 		payment, constructErr := client.ConstructPayment(from, to, fee, amt, noteField, "", 0, 0)
 		arg1, _ := base64.StdEncoding.DecodeString("xPUB+DJir1wsH7g2iEY1QwYqHqYH1vUJtzZKW4RxXsY=")
-		programArgs = append(programArgs, arg1)
+		programArgs := [][]byte{arg1}
 		if constructErr != nil {
 			err = constructErr
 			if !cfg.Quiet {
@@ -339,13 +349,25 @@ func withdrawTLHC(contractList, toList []string, programs [][]byte, client libgo
 			return
 		}
 
-		stx := transactions.SignedTxn{
+		var stx transactions.SignedTxn
+		if cfg.TLHC {
+			stx = transactions.SignedTxn{
 				Txn: payment,
 				Lsig: transactions.LogicSig{
 					Logic: programs[i],
 					Args:  programArgs,
 				}}
+		} else {
+			stx = transactions.SignedTxn{
+				Txn: payment,
+				Lsig: transactions.LogicSig{
+					Logic: programs[i],
+				}}
+		}
+
+		//TODO: remove below
 		fmt.Fprintf(os.Stdout, "program size: %v\n", len(programs[i]))
+
 		// send the transaction
 		_, sendErr := client.BroadcastTransaction(stx)
 
@@ -368,7 +390,7 @@ func withdrawTLHC(contractList, toList []string, programs [][]byte, client libgo
 	return
 }
 
-// refresh TLHC contract accounts
+// refresh contract accounts
 func refreshContractAccount(accounts []string, client libgoal.Client, cfg PpConfig) error {
 
 	// Fee of 0 will make cause the function to use the suggested one by network
@@ -379,9 +401,9 @@ func refreshContractAccount(accounts []string, client libgoal.Client, cfg PpConf
 	}
 	var contractMinAmount uint64
 	if cfg.RefreshTime == 0 {
-		contractMinAmount = 1000*3600*(cfg.TLHCWithdrawAmount+cfg.MaxFee)
+		contractMinAmount = 1000*3600*(cfg.ContractWithdrawAmount +cfg.MaxFee)
 	} else {
-		contractMinAmount = 1000*uint64(cfg.RefreshTime.Seconds())*(cfg.TLHCWithdrawAmount+cfg.MaxFee)
+		contractMinAmount = 1000*uint64(cfg.RefreshTime.Seconds())*(cfg.ContractWithdrawAmount +cfg.MaxFee)
 	}
 
 	const pingpongTag = "pingpong-tlhc-refund"
@@ -408,4 +430,65 @@ func refreshContractAccount(accounts []string, client libgoal.Client, cfg PpConf
 	}
 
 	return nil
+}
+
+// generate teal programs that contains 10 signature verifications
+func generateAirdrop(number int) (programs [][]byte, addrs []string, err error){
+	var pBuf [][]byte
+	var aBuf []string
+	for i := 0; i < number; i++ {
+		rBytes := make([]byte, 5, 5)
+		crypto.RandBytes(rBytes)
+		bStr := base64.StdEncoding.EncodeToString(rBytes)
+		prefix := fmt.Sprintf("byte base64 %s\npop\n", bStr)
+		p, a, genErr := generateContract(prefix+airdropTeal)
+		if genErr != nil {
+			fmt.Fprintf(os.Stderr,"error when generating dirty teal contract: %v\n", genErr)
+			err = genErr
+			return
+		}
+		pBuf = append(pBuf, p)
+		aBuf = append(aBuf, a)
+	}
+	programs = pBuf
+	addrs = aBuf
+	return
+}
+
+// generate teal programs that contains 10 signature verifications
+func generateDirtyTeal(number int) (programs [][]byte, addrs []string, err error){
+	var pBuf [][]byte
+	var aBuf []string
+	for i := 0; i < number; i++ {
+		rBytes := make([]byte, 5, 5)
+		crypto.RandBytes(rBytes)
+		bStr := base64.StdEncoding.EncodeToString(rBytes)
+		prefix := fmt.Sprintf("byte base64 %s\npop\n", bStr)
+		p, a, genErr := generateContract(prefix+dirtyTeal)
+		if genErr != nil {
+			fmt.Fprintf(os.Stderr,"error when generating dirty teal contract: %v\n", genErr)
+			err = genErr
+			return
+		}
+		pBuf = append(pBuf, p)
+		aBuf = append(aBuf, a)
+	}
+	programs = pBuf
+	addrs = aBuf
+	return
+}
+
+// generate teal byte code and its hash from program string
+func generateContract(pStr string) (program []byte, address string, err error) {
+	var tp []byte
+	tp, err = logic.AssembleString(pStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,"error when assemble TLHC program: %v\n", err)
+		return
+	}
+	program = tp
+	ph := transactions.HashProgram(tp)
+	pha := basics.Address(ph)
+	address = pha.String()
+	return
 }
