@@ -355,9 +355,6 @@ func contractWithdraw(contractList, toList []string, programs [][]byte, client l
 				}}
 		}
 
-		//TODO: remove below
-		fmt.Fprintf(os.Stdout, "program size: %v\n", len(programs[i]))
-
 		// send the transaction
 		_, sendErr := client.BroadcastTransaction(stx)
 

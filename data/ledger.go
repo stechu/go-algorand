@@ -328,6 +328,7 @@ func (*Ledger) AssemblePayset(pool *pools.TransactionPool, eval *ledger.BlockEva
 
 		if time.Now().After(deadline) {
 			stats.StopReason = telemetryspec.AssembleBlockTimeout
+			logging.Base().Info("block evaluator timeout!!!")
 			break
 		}
 
