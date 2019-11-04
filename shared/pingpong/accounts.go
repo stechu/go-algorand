@@ -171,6 +171,9 @@ func prepareAssets(accounts map[string]uint64, client libgoal.Client, cfg PpConf
 		if len(account.AssetParams) >= int(cfg.NumAsset) {
 			break
 		}
+		if !cfg.Quiet {
+			fmt.Printf("Waiting for asset creation: %d of %d created", len(account.AssetParams), cfg.NumAsset)
+		}
 		time.Sleep(time.Second)
 	}
 
